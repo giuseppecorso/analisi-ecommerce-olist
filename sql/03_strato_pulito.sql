@@ -154,3 +154,73 @@ WHERE p.product_category = 'senza categoria'
     OR p.product_category = 'pc_gamer'
     OR p.product_category = 'portable_kitchen_and_food_preparers'
 GROUP BY p.product_category;
+
+-- ---------------------------------------------------------
+-- Tabella recensioni
+-- Una sola recensione per ordine: la più recente.
+--   In raw al massimo lo 0,6% degli ordini ha più recensioni
+--   (fino a 3): tenerle tutte duplicherebbe quegli ordini
+--   nella domanda 4.
+-- "Più recente" = review_answer_timestamp: quando il cliente
+--   risponde, con l'ora. review_creation_date ha solo il giorno,
+--   quindi due recensioni dello stesso giorno sarebbero pari merito.
+-- Metodo: ROW_NUMBER numera le recensioni di ogni ordine dalla più
+--   recente; serve il WITH perché il WHERE non vede posizione.
+-- Solo ordini presenti in clean.orders: il JOIN fa da filtro.
+-- Colonne: order_id, review_score (domanda 4).
+-- Scartati: review_id (814 doppioni, non può essere chiave),
+--   titolo e testo del commento (non usati), le due date
+--   (servono solo a scegliere).
+-- Chiave: order_id
+-- Righe attese: al massimo 96.211 (gli ordini consegnati
+--   senza recensione restano fuori)
+-- ---------------------------------------------------------
+
+DROP TABLE IF EXISTS clean.reviews;
+
+CREATE TABLE clean.reviews AS
+WITH recensioni_numerate AS (
+    SELECT
+        order_id,
+        review_score,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id
+            ORDER BY CAST(review_answer_timestamp AS TIMESTAMP) DESC
+        ) AS posizione
+    FROM raw.order_reviews
+)
+SELECT
+    rn.order_id,
+    CAST(rn.review_score AS INTEGER) AS review_score
+FROM recensioni_numerate AS rn
+JOIN clean.orders AS o
+    ON o.order_id = rn.order_id
+WHERE rn.posizione = 1;
+
+-- Verifica 1. Attesi: righe = chiavi_distinte = con_voto
+-- Risultato: 95.568 / 95.568 / 95.568. Una sola recensione per
+--   ordine, nessun voto vuoto.
+-- Dato: 643 ordini consegnati (0,7%) non hanno recensione.
+-- E quindi: la domanda 4 lavora su 95.568 ordini; lo 0,7% escluso
+--   pesa poco, ma va dichiarato nel README.
+SELECT
+    COUNT(*) AS righe,
+    COUNT(DISTINCT r.order_id) AS chiavi_distinte,
+    COUNT(r.review_score) AS con_voto
+FROM clean.reviews AS r;
+
+-- Verifica 2. Distribuzione dei voti. Attesi: solo voti 1-5,
+--   somma 95.568.
+-- Risultato: 1 = 9.314 (9,7%), 2 = 2.915 (3,1%), 3 = 7.895 (8,3%),
+--   4 = 18.837 (19,7%), 5 = 56.607 (59,2%). Somma 95.568.
+-- Dato: il 78,9% dei voti è 4 o 5; il voto 1 è più di tre volte
+--   più frequente del 2 (voti polarizzati).
+-- E quindi: la mediana sarà 5 quasi ovunque e non distingue i
+--   gruppi. Per la domanda 4 conviene misurare la quota di voti
+--   negativi (1-2) o la media: da decidere nella sessione 7.
+SELECT
+    r.review_score,
+    COUNT(*) AS recensioni
+FROM clean.reviews AS r
+GROUP BY r.review_score
+ORDER BY r.review_score;
