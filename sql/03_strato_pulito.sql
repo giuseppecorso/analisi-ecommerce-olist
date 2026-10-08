@@ -57,3 +57,39 @@ JOIN clean.orders o
 
 -- Verifica: 109.880 righe
 SELECT COUNT(*) FROM clean.order_items;
+
+-- ---------------------------------------------------------
+-- Tabella clienti
+-- Solo i clienti degli ordini presenti in clean.orders
+--   (delivered e nel periodo): il JOIN fa da filtro
+-- Colonne: customer_unique_id per contare le persone vere,
+--   customer_state per la domanda 4. CAP e città scartati.
+-- Chiave: customer_id (uno per ordine)
+-- Righe attese: 96.211, come clean.orders
+-- ---------------------------------------------------------
+
+DROP TABLE IF EXISTS clean.customers;
+
+CREATE TABLE clean.customers AS
+SELECT
+    c.customer_id,
+    c.customer_unique_id,
+    c.customer_state
+FROM raw.customers AS c
+JOIN clean.orders AS o
+    ON o.customer_id = c.customer_id;
+
+-- Verifica. Attesi: righe = chiavi_distinte = 96.211, stati = 27
+-- Risultato: 96.211 righe, 96.211 chiavi distinte (nessun doppione),
+--   93.104 persone, 27 stati.
+-- Dato: gli ordini in più rispetto alle persone sono 3.107, quindi
+--   al massimo il 3,3% dei clienti ha fatto più di un ordine nel periodo.
+-- E quindi: l'effetto dei ritardi non si misura sui riacquisti
+--   (quasi nessuno torna), ma sulle recensioni (domanda 4).
+-- Ipotesi, non dimostrata: c'è margine per lavorare sulla fidelizzazione.
+SELECT
+    COUNT(*) AS righe,
+    COUNT(DISTINCT c.customer_id) AS chiavi_distinte,
+    COUNT(DISTINCT c.customer_unique_id) AS persone,
+    COUNT(DISTINCT c.customer_state) AS stati
+FROM clean.customers AS c;
