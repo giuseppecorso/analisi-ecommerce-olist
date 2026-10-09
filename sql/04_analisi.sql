@@ -191,3 +191,74 @@ SELECT
 FROM categorie AS c
 WHERE c.fatturato_2017 >= 30000
 ORDER BY crescita DESC;
+
+-- =====================================================
+-- DOMANDA 3
+-- Quanto pesa la spedizione sul prezzo, per categoria?
+-- =====================================================
+-- Quota spedizione = somma delle spedizioni / somma dei prezzi x 100.
+--   Si legge: "su 100 R$ di merce, quanti R$ di spedizione".
+--   È un rapporto tra somme, non la media dei rapporti pezzo per
+--   pezzo: la media verrebbe gonfiata dai pezzi da pochi R$.
+--   Limite: la quota riflette di più i pezzi costosi. Per chi compra
+--   un pezzo economico, la spedizione pesa più di quanto dica la quota.
+-- freight_value = spedizione pagata dal cliente per il pezzo
+--   (se l'ordine ha più pezzi, è già divisa tra i pezzi).
+
+
+-- 3a. Riferimento: il negozio intero.
+-- Risultato: 2.192.092,88 R$ di spedizione su 13.181.027,13 R$
+--   di merce, quota 16,63%.
+-- E quindi: una categoria "pesa tanto" se sta sopra il 16,63%.
+SELECT
+    ROUND(SUM(oi.freight_value), 2) AS spedizione_totale,
+    ROUND(SUM(oi.price), 2) AS fatturato_totale,
+    ROUND(SUM(oi.freight_value) / SUM(oi.price) * 100, 2) AS quota_spedizione
+FROM clean.order_items AS oi;
+
+
+-- 3b. Quota spedizione per categoria, con prezzo e peso tipici.
+-- Soglia: solo categorie con almeno 1.000 pezzi (circa l'1% dei pezzi).
+--   È una scelta nostra: sotto quella cifra la quota è rumore
+--   (es. home_comfort_2: 30 pezzi, 53,97%).
+-- HAVING e non WHERE: il numero di pezzi esiste solo dopo il GROUP BY.
+-- Prezzo e peso tipici = mediana sui pezzi venduti: pochi pezzi
+--   molto cari o molto pesanti alzerebbero la media.
+-- Il JOIN con products non perde pezzi (verificato nella domanda 1).
+-- Risultato: 22 categorie.
+-- Dati:
+--   - La quota va da 8,43% (watches_gifts) a 29,47% (electronics).
+--   - 12 categorie su 22 sono sopra il negozio (16,63%).
+--   - In cima ci sono due profili diversi:
+--     economici e leggeri: electronics (21,89 R$, 200 g, 29,47%),
+--       telephony (29,99 R$, 225 g, 22,36%);
+--     pesanti: office_furniture (144,94 R$, 10.975 g, 25,02%),
+--       furniture_decor (65,49 R$, 1.300 g, 23,67%).
+--   - In fondo ci sono i prezzi alti: watches_gifts (128,90 R$, 346 g,
+--     8,43%), cool_stuff (129,90 R$, 1.450 g, 13,34%).
+--   - Ipotesi della domanda 1 confermata: furniture_decor ha prezzo
+--     tipico basso e peso tra i più alti, e la spedizione ci pesa
+--     più che nel negozio.
+-- E quindi:
+--   - La spedizione pesa tanto per due motivi diversi, con rimedi
+--     diversi (ipotesi di intervento, non risultati):
+--     prezzo basso (electronics, telephony): spedizione gratuita
+--       sopra una soglia, per spingere a comprare più pezzi insieme;
+--     peso alto (mobili): tariffe dei corrieri per peso.
+--   - Il prezzo basso spiega la quota per aritmetica (si divide per
+--     un numero piccolo). Il peso è un'ipotesi coerente con i dati
+--     (i corrieri fanno pagare il peso), non una prova.
+--   - Limite: il volume non è considerato. Un mobile leggero ma
+--     ingombrante costa da spedire più di quanto dica il peso.
+SELECT
+    p.product_category,
+    COUNT(*) AS pezzi,
+    ROUND(SUM(oi.freight_value) / SUM(oi.price) * 100, 2) AS quota_spedizione,
+    ROUND(CAST(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY oi.price) AS NUMERIC), 2) AS prezzo_mediano,
+    ROUND(CAST(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.product_weight_g) AS NUMERIC), 0) AS peso_mediano_g
+FROM clean.order_items AS oi
+JOIN clean.products AS p
+    ON p.product_id = oi.product_id
+GROUP BY p.product_category
+HAVING COUNT(*) >= 1000
+ORDER BY quota_spedizione DESC;
