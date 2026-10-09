@@ -262,3 +262,152 @@ JOIN clean.products AS p
 GROUP BY p.product_category
 HAVING COUNT(*) >= 1000
 ORDER BY quota_spedizione DESC;
+
+-- =====================================================
+-- DOMANDA 4
+-- I ritardi di consegna peggiorano le recensioni?
+-- In quali stati si consegna peggio?
+-- =====================================================
+-- Ritardo = consegna dopo la data stimata (almeno 1 giorno).
+--   Consegnato il giorno stimato o prima = in tempo.
+-- Solo ordini con data di consegna (decisione dello strato pulito).
+-- Recensioni: quota negative (voto 1-2) come misura principale,
+--   voto medio come seconda. La mediana non serve: i voti sono
+--   polarizzati e sarebbe quasi sempre 5.
+-- AVG(CASE WHEN ... THEN 1 ELSE 0 END) * 100 = quota in %:
+--   la media di una colonna di 1 e 0 è la quota degli 1.
+
+
+-- 4a. Recensioni: ordini in tempo contro ordini in ritardo.
+-- Il JOIN con reviews tiene solo gli ordini con una recensione.
+-- Verifica: 89.182 + 6.378 = 95.560 ordini. Le recensioni sono 95.568:
+--   la differenza (8) sono gli 8 ordini senza data di consegna.
+-- Dati:
+--   - In ritardo: 6.378 ordini (6,67%), voto medio 2,27,
+--     negative 62,42%.
+--   - In tempo: 89.182 ordini, voto medio 4,29, negative 9,25%.
+--   - Con il ritardo le negative passano dal 9,25% al 62,42%:
+--     quasi 7 volte tanto.
+--   - Il 6,67% degli ordini (quelli in ritardo) produce circa un terzo
+--     delle recensioni negative (circa 3.980 su 12.230,
+--     calcolate dalle quote).
+-- E quindi:
+--   - Sì: i ritardi peggiorano le recensioni, e di molto.
+--   - Ridurre i ritardi è la leva più forte sulle recensioni: riguarda
+--     pochi ordini, ma un terzo delle negative.
+WITH consegne AS (
+    SELECT
+        CASE WHEN o.order_delivered_customer_date > o.order_estimated_delivery_date
+             THEN 'in ritardo'
+             ELSE 'in tempo'
+        END AS consegna,                                   
+        r.review_score                                     
+    FROM clean.orders AS o
+    JOIN clean.reviews AS r
+        ON r.order_id = o.order_id
+    WHERE o.order_delivered_customer_date IS NOT NULL
+)
+SELECT
+    c.consegna,
+    COUNT(*) AS ordini,
+    ROUND(AVG(c.review_score), 2) AS voto_medio,
+    ROUND(AVG(CASE WHEN c.review_score <= 2 THEN 1 ELSE 0 END) * 100, 2) AS quota_negative
+FROM consegne AS c
+GROUP BY c.consegna
+ORDER BY c.consegna;
+
+
+-- 4b. Recensioni per fascia di ritardo.
+-- Verifica: le 4 fasce di ritardo sommano 6.378 ordini, come in 4a.
+-- Dati (quota negative / voto medio):
+--   - in tempo: 9,25% / 4,29
+--   - ritardo 1-3 giorni: 32,14% / 3,29 (3,5 volte le negative in tempo)
+--   - ritardo 4-7 giorni: 67,68% / 2,10
+--   - ritardo 8-14 giorni: 80,15% / 1,67
+--   - ritardo oltre 14 giorni: 78,32% / 1,72
+-- E quindi:
+--   - Più il ritardo è lungo, più le recensioni peggiorano. È un indizio
+--     forte che il ritardo sia una causa, non una coincidenza.
+--     Resta un'ipotesi: i dati mostrano il legame, non lo dimostrano
+--     (es. uno stesso venditore potrebbe causare sia ritardi sia
+--     prodotti difettosi).
+--   - Anche 1-3 giorni di ritardo pesano: le negative triplicano.
+--   - Dopo una settimana il danno è quasi al massimo (4 su 5 negative)
+--     e poi si ferma: conta soprattutto non sforare la prima settimana.
+WITH consegne AS (
+    SELECT
+        CASE
+            WHEN o.order_delivered_customer_date <= o.order_estimated_delivery_date
+                THEN '1. in tempo'
+            WHEN o.order_delivered_customer_date <= o.order_estimated_delivery_date + 3
+                THEN '2. ritardo 1-3 giorni'
+            WHEN o.order_delivered_customer_date <= o.order_estimated_delivery_date + 7
+                THEN '3. ritardo 4-7 giorni'
+            WHEN o.order_delivered_customer_date <= o.order_estimated_delivery_date + 14
+                THEN '4. ritardo 8-14 giorni'
+            ELSE '5. ritardo oltre 14 giorni'
+        END AS fascia,
+        r.review_score
+    FROM clean.orders AS o
+    JOIN clean.reviews AS r
+        ON r.order_id = o.order_id
+    WHERE o.order_delivered_customer_date IS NOT NULL
+)
+SELECT
+    c.fascia,
+    COUNT(*) AS ordini,
+    ROUND(AVG(c.review_score), 2) AS voto_medio,
+    ROUND(AVG(CASE WHEN c.review_score <= 2 THEN 1 ELSE 0 END) * 100, 2) AS quota_negative
+FROM consegne AS c
+GROUP BY c.fascia
+ORDER BY c.fascia;
+
+
+-- 4c. Consegne per stato del cliente.
+-- Giorni di consegna = data di consegna - data di acquisto (mediana).
+-- Quota ritardo = % di ordini consegnati dopo la data stimata.
+-- Soglia: solo stati con almeno 100 ordini, sotto la quota è rumore.
+--   Non uso l'1% degli ordini: taglierebbe proprio gli stati piccoli,
+--   che potrebbero essere la risposta.
+-- Qui non servono le recensioni: si contano tutti gli ordini con
+--   data di consegna.
+-- Risultato: 24 stati (3 esclusi perché sotto i 100 ordini).
+-- Dati:
+--   - Quota ritardo più alta: AL 21,46% (1 ordine su 5), MA 17,53%,
+--     SE 15,36%, PI 13,89%, CE 13,83%. Tutti stati del nord-est.
+--   - RJ: 12.310 ordini (secondo mercato) e 12,14% di ritardi, quasi
+--     3 volte SP (4,50%). Circa 1.500 ordini in ritardo, poco meno di
+--     SP (circa 1.800), che però ha più del triplo degli ordini.
+--   - SP: consegna più veloce (7 giorni mediani) e una delle quote
+--     di ritardo più basse.
+--   - Lontano non vuol dire in ritardo: AM ha la consegna più lenta
+--     (26 giorni) ma la quota di ritardo più bassa (2,76%).
+-- E quindi:
+--   - "Consegnare peggio" si misura sulla promessa, non sui giorni:
+--     le recensioni peggiorano con il ritardo rispetto alla data stimata
+--     (4a, 4b). Dove la data stimata è realistica, anche una consegna
+--     lunga non è un ritardo.
+--   - Priorità: RJ per numero di ordini in ritardo, il nord-est
+--     (AL, MA, SE, PI, CE) per quota.
+--   - Ipotesi (non verificata): nel nord-est la data stimata è troppo
+--     ottimista. Le leve possibili: consegnare più in fretta o
+--     promettere date più realistiche.
+--   - Ipotesi: SP è servito meglio perché lì ci sono molti venditori.
+--     I venditori non fanno parte di questo progetto.
+--   - Limite: gli stati sotto i 400 ordini (AL, SE, TO, RO, AM) hanno
+--     quote meno stabili.
+SELECT
+    cu.customer_state AS stato,
+    COUNT(*) AS ordini,
+    ROUND(CAST(PERCENTILE_CONT(0.5) WITHIN GROUP
+        (ORDER BY o.order_delivered_customer_date - o.order_purchase_date)
+        AS NUMERIC), 1) AS giorni_consegna_mediani,
+    ROUND(AVG(CASE WHEN o.order_delivered_customer_date > o.order_estimated_delivery_date
+                   THEN 1 ELSE 0 END) * 100, 2) AS quota_ritardo
+FROM clean.orders AS o
+JOIN clean.customers AS cu
+    ON cu.customer_id = o.customer_id
+WHERE o.order_delivered_customer_date IS NOT NULL
+GROUP BY cu.customer_state
+HAVING COUNT(*) >= 100
+ORDER BY quota_ritardo DESC;
